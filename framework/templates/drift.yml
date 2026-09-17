@@ -1,0 +1,28 @@
+name: drift
+on:
+  schedule: [{ cron: "0 9 1 * *" }]   # 09:00 UTC, first of the month
+  workflow_dispatch:
+  push: { branches: [main] }
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: drift
+        run: |
+          { .zth/bin/zth check && .zth/bin/zth drift; } | tee report.txt
+          echo "failed=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - if: failure()
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          title="SOPs need re-verification"
+          body=$'`zth drift` reports SOPs past their freshness window.\n\nRe-verification means executing the path again, not reading it.\n\n```\n'"$(sed 's/\x1b\[[0-9;]*m//g' report.txt)"$'\n```'
+          num=$(gh issue list --state open --search "$title in:title" --json number -q '.[0].number')
+          if [ -n "$num" ]; then gh issue comment "$num" --body "$body"
+          else gh issue create --title "$title" --body "$body" --label maintenance 2>/dev/null \
+               || gh issue create --title "$title" --body "$body"; fi

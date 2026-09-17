@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+# zth — Zero to Hero. Install the method into a repo, then keep its SOPs honest.
+set -euo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The framework payload is framework/ in the source repo, and .zth/ once installed.
+if   [ -f "$SELF_DIR/../framework/method.md" ]; then SRC="$(cd "$SELF_DIR/../framework" && pwd)"
+elif [ -f "$SELF_DIR/../method.md"           ]; then SRC="$(cd "$SELF_DIR/.."           && pwd)"
+else echo "zth: cannot locate the framework payload (method.md)" >&2; exit 2; fi
+
+VERSION="$(cat "$SRC/VERSION")"
+SECTIONS=("## Context" "## The path" "## Traps" "## Routes not taken" "## Keep fresh")
+KEYS=(zth title goal done_when route recheck_every)
+
+red()  { printf '\033[31m%s\033[0m\n' "$*"; }
+grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
+ylw()  { printf '\033[33m%s\033[0m\n' "$*"; }
+
+# YYYY-MM-DD -> epoch seconds. BSD date first (macOS), GNU second (Linux/CI).
+to_epoch() { date -j -f "%Y-%m-%d" "$1" "+%s" 2>/dev/null || date -d "$1" "+%s"; }
+
+# Frontmatter block, exclusive of the --- fences. Empty if the file has none.
+frontmatter() { awk 'NR==1{if($0!="---") exit} NR>1{if($0=="---") exit; print}' "$1"; }
+
+sops_in() { find "${1:-.}/sops" -maxdepth 1 -name '*.md' 2>/dev/null | sort; }
+
+usage() {
+  cat <<'EOF'
+zth — Zero to Hero
+
+  zth new <slug>      Scaffold a satellite repo for one topic
+  zth install [dir]   Install the method into <dir> as .zth/ (default: .)
+  zth update [dir]    Re-install the method at the current framework version
+  zth check [dir]     Validate every sops/*.md against the SOP format
+  zth drift [dir]     Report which SOPs are past their recheck date
+
+check and drift exit non-zero on failure, so CI can gate on them.
+EOF
+}
+
+cmd_install() {
+  local dst="${1:-.}"
+  rm -rf "$dst/.zth"
+  mkdir -p "$dst/.zth/bin"
+  # .zth/ is framework-owned in its entirety, which is why update is just a re-copy:
+  # user content lives in sops/ and README.md and is never touched.
+  cp -R "$SRC/." "$dst/.zth/"
+  cp "$SELF_DIR/zth" "$dst/.zth/bin/zth"
+  chmod +x "$dst/.zth/bin/zth"
+
+  # These three live outside .zth because the tools that read them look at fixed
+  # paths. The skill is namespaced to us, so it is ours to overwrite; the other
+  # two are only seeded, never clobbered.
+  mkdir -p "$dst/.claude/skills/zero-to-hero"
+  cp "$SRC/templates/claude-skill/SKILL.md" "$dst/.claude/skills/zero-to-hero/SKILL.md"
+
+  if [ -f "$dst/AGENTS.md" ]; then
+    grep -q '.zth/method.md' "$dst/AGENTS.md" \
+      || ylw "note: $dst/AGENTS.md exists — add a line pointing agents at .zth/method.md"
+  else
+    cp "$SRC/templates/AGENTS.md" "$dst/AGENTS.md"
+  fi
+
+  mkdir -p "$dst/.github/workflows"
+  [ -f "$dst/.github/workflows/drift.yml" ] \
+    || cp "$SRC/templates/drift.yml" "$dst/.github/workflows/drift.yml"
+
+  grn "zth $VERSION installed to $dst/.zth"
+}
+
+cmd_new() {
+  local slug="${1:?usage: zth new <slug>}"
+  [ -e "$slug" ] && { red "zth: $slug already exists"; exit 1; }
+  mkdir -p "$slug/sops"
+  cmd_install "$slug" >/dev/null
+  cp "$SRC/templates/README.md" "$slug/README.md"
+  cp "$SRC/templates/SOP.md" "$slug/sops/example.md"
+  printf '%s\n' '.DS_Store' '*.log' > "$slug/.gitignore"
+  git -C "$slug" init -q -b main
+  # The repo name comes from the directory name, not the path, and the prefix is
+  # added only once so `zth new zero-to-hero-proxmox` does not stutter.
+  local name; name="$(basename "$slug")"; name="zero-to-hero-${name#zero-to-hero-}"
+  grn "Created $slug (zth $VERSION)"
+  cat <<EOF
+
+Next:
+  1. Fill $slug/sops/example.md — start with FRAME (goal + done_when), then rename the file.
+  2. (cd $slug && .zth/bin/zth check)
+  3. gh repo create $name --public --source=$slug --push -d "Zero to Hero: <topic>"
+  4. gh repo edit $name --add-topic zero-to-hero
+EOF
+}
+
+cmd_check() {
+  local root="${1:-.}" files fails=0 total=0
+  files="$(sops_in "$root")"
+  [ -z "$files" ] && { ylw "no SOPs found in $root/sops/"; return 0; }
+
+  while IFS= read -r f; do
+    total=$((total+1))
+    local errs=() fm heads
+    fm="$(frontmatter "$f")"
+
+    if [ -z "$fm" ]; then
+      errs+=("no YAML frontmatter")
+    else
+      # ponytail: line-prefix matching, not a YAML parser. Catches missing and
+      # misindented keys, which is every failure seen in practice. If SOPs ever
+      # grow nested structures, swap this block for yq.
+      for k in "${KEYS[@]}"; do
+        grep -q "^$k:" <<<"$fm" || errs+=("missing key: $k")
+      done
+      grep -q "^verified:" <<<"$fm" || errs+=("missing key: verified")
+      for sub in on by env; do
+        grep -qE "^[[:space:]]+$sub:" <<<"$fm" || errs+=("missing key: verified.$sub")
+      done
+      local on recheck
+      on="$(sed -n 's/^[[:space:]]*on:[[:space:]]*//p' <<<"$fm" | head -1)"
+      if [ -n "$on" ]; then
+        to_epoch "$on" >/dev/null 2>&1 || errs+=("verified.on is not YYYY-MM-DD: $on")
+      fi
+      recheck="$(sed -n 's/^recheck_every:[[:space:]]*//p' <<<"$fm" | head -1)"
+      if [ -n "$recheck" ] && ! grep -qE '^[0-9]+d$' <<<"$recheck"; then
+        errs+=("recheck_every must be <n>d: $recheck")
+      fi
+    fi
+
+    # Required sections, present and in order.
+    heads="$(grep '^## ' "$f" || true)"
+    for s in "${SECTIONS[@]}"; do
+      grep -qxF "$s" <<<"$heads" || errs+=("missing section: $s")
+    done
+    if [ "$(grep -cxF -e "## Context" -e "## The path" -e "## Traps" \
+              -e "## Routes not taken" -e "## Keep fresh" <<<"$heads")" -eq 5 ]; then
+      local got want
+      got="$(grep -xF -e "## Context" -e "## The path" -e "## Traps" \
+               -e "## Routes not taken" -e "## Keep fresh" <<<"$heads")"
+      want="$(printf '%s\n' "${SECTIONS[@]}")"
+      [ "$got" = "$want" ] || errs+=("sections out of order")
+    fi
+
+    if [ ${#errs[@]} -eq 0 ]; then
+      grn "  ok    $f"
+    else
+      fails=$((fails+1))
+      red "  FAIL  $f"
+      printf '          - %s\n' "${errs[@]}"
+    fi
+  done <<<"$files"
+
+  echo
+  if [ "$fails" -gt 0 ]; then red "$fails/$total SOP(s) invalid"; return 1; fi
+  grn "$total/$total SOP(s) valid"
+}
+
+cmd_drift() {
+  local root="${1:-.}" files stale=0 now
+  files="$(sops_in "$root")"
+  [ -z "$files" ] && { ylw "no SOPs found in $root/sops/"; return 0; }
+  now="$(date +%s)"
+
+  while IFS= read -r f; do
+    local fm on recheck days left due
+    fm="$(frontmatter "$f")"
+    on="$(sed -n 's/^[[:space:]]*on:[[:space:]]*//p' <<<"$fm" | head -1)"
+    recheck="$(sed -n 's/^recheck_every:[[:space:]]*//p' <<<"$fm" | head -1)"
+    if [ -z "$on" ] || [ -z "$recheck" ] || ! due="$(to_epoch "$on" 2>/dev/null)"; then
+      ylw "  ?      $f — unverifiable (run: zth check)"; stale=$((stale+1)); continue
+    fi
+    if grep -q '^status:[[:space:]]*draft' <<<"$fm"; then
+      ylw "  draft  $f — path not yet executed end to end"; continue
+    fi
+    days="${recheck%d}"
+    left=$(( (due + days*86400 - now) / 86400 ))
+    if   [ "$left" -le 0 ]  ; then red "  STALE  $f — ${left#-}d overdue (verified $on, every $recheck)"; stale=$((stale+1))
+    elif [ "$left" -le 14 ] ; then ylw "  due    $f — in ${left}d (verified $on)"
+    else                           grn "  fresh  $f — ${left}d left (verified $on)"; fi
+  done <<<"$files"
+
+  echo
+  if [ "$stale" -gt 0 ]; then
+    red "$stale SOP(s) need re-verification — that means RUN, not a read-through."
+    return 1
+  fi
+  grn "all SOPs within their freshness window"
+}
+
+case "${1:-}" in
+  new)              shift; cmd_new "$@" ;;
+  install)          shift; cmd_install "${1:-.}" ;;
+  update)           shift; cmd_install "${1:-.}" ;;
+  check)            shift; cmd_check "${1:-.}" ;;
+  drift)            shift; cmd_drift "${1:-.}" ;;
+  -v|--version)     echo "zth $VERSION" ;;
+  ""|-h|--help)     usage ;;
+  *)                red "zth: unknown command '$1'"; echo; usage; exit 2 ;;
+esac
