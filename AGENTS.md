@@ -1,8 +1,9 @@
 # zero-to-hero
-The Zero to Hero method and its `zth` CLI. `framework/` is the payload `zth install` copies into satellite repos as `.zth/`. The method is `framework/method.md`; the SOP contract is `framework/sop-format.md`.
+The Zero to Hero method and its `zth` CLI. `framework/` is the payload `zth install` copies into satellite repos as `.zth/`. Live: https://zero-to-hero.technoir.cloud (README rendered). The method is `framework/method.md`; the SOP contract is `framework/sop-format.md`.
 
 ## Commands
-- Check (before every commit): `./tests/run.sh`, which must pass on macOS and Linux (CI runs both).
+- Check (before every commit and deploy): `./tests/run.sh`, which must pass on macOS and Linux (CI runs both).
+- Deploy the page: `./scripts/deploy.sh`
 
 ## Non-negotiables
 1. `framework/` is published API: every change reaches every satellite on `zth update`.
