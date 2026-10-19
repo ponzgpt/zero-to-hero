@@ -3,11 +3,13 @@
 **An agentic framework for building guides that are actually true, and stay true.**
 
 Give it a topic, a piece of software, or an open question. It produces a SOP that takes a
-competent-but-new person from zero to working by the path of least resistance — and then keeps
+competent-but-new person from zero to working by the path of least resistance, and then keeps
 that SOP honest as the world moves under it.
 
 The method is in [`framework/method.md`](framework/method.md). The rest of this repo is the
 machinery that makes it operable.
+
+**Status:** the method and the `zth` tooling exist and are tested. No SOP repo has been built with it yet.
 
 ---
 
@@ -37,7 +39,7 @@ FRAME → SCOUT → ROUTE → RUN → FORGE → KEEP
 
 | Phase | Produces |
 |---|---|
-| **FRAME** | `done_when` — the destination as assertions that are true or false on a real machine |
+| **FRAME** | `done_when`: the destination as assertions that are true or false on a real machine |
 | **SCOUT** | Sources with versions and dates, candidate routes, known traps |
 | **ROUTE** | The chosen route, scored on five axes, and every rejection with its reason |
 | **RUN** | A real transcript from a real machine, including every wall hit |
@@ -59,7 +61,7 @@ zero-to-hero/bin/zth new proxmox
 
 That scaffolds a satellite repo carrying the method, an agent entry point, a SOP template and a
 scheduled drift check. Then open it with any coding agent and say *"work the Zero to Hero loop for
-&lt;topic&gt;"* — `AGENTS.md` and the bundled Claude skill point it at the method.
+&lt;topic&gt;"*. `AGENTS.md` and the bundled Claude skill point it at the method.
 
 To add the method to a repo you already have:
 
@@ -75,7 +77,7 @@ To add the method to a repo you already have:
 | `zth install [dir]` | Install the method into a repo as `.zth/` |
 | `zth update [dir]` | Pull the current framework version into an existing repo |
 | `zth check [dir]` | Validate every `sops/*.md` against the format contract |
-| `zth drift [dir]` | Report SOPs past their recheck date — exits non-zero, so CI can gate |
+| `zth drift [dir]` | Report SOPs past their recheck date; exits non-zero, so CI can gate |
 
 ## How the repos fit together
 
@@ -89,7 +91,7 @@ zero-to-hero-hermes-agent       ← satellite
 ```
 
 **`zth install` copies the framework into the satellite as `.zth/`.** That directory is
-framework-owned in its entirety — user content only ever lives in `sops/` and `README.md`. Which is
+framework-owned in its entirety: user content only ever lives in `sops/` and `README.md`. Which is
 why `zth update` is just a re-copy: there is nothing to merge, so there is nothing to conflict.
 That single constraint is what buys propagation without a merge tool.
 
@@ -122,9 +124,14 @@ cost of one constraint worth keeping anyway: **never edit `.zth/`.**
 ./tests/run.sh
 ```
 
-31 assertions against `zth check`, `zth drift` and `zth install`, no framework, no fixtures.
+Shell tests for `zth check`, `zth drift` and `zth install`, with no test framework.
+
+## How this was made
+
+I'm a vibe coder. I decide what to build, write the spec and the rules it has to follow, and test the result until it
+does what I said. AI coding agents write the code; I don't write code by hand. Commits under my name were made by an
+agent working for me.
 
 ## License
 
-[Apache-2.0](LICENSE). The tooling is yours to use and build on; the trademark clause keeps the
-name attached to the method.
+[Apache-2.0](LICENSE).
