@@ -6,7 +6,7 @@ COPY README.md ./
 COPY page/ page/
 RUN node page/build.mjs zero-to-hero
 
-FROM nginx:1.27-alpine
+FROM nginx:1.30-alpine
 COPY --from=page /w/index.html /usr/share/nginx/html/index.html
 COPY page/nginx.conf /etc/nginx/conf.d/default.conf
 EXPOSE 80
